@@ -12,7 +12,7 @@ from telegram.ext import (
 TOKEN = os.getenv('TOKEN', '7964154308:AAGPy7d8XgrvuPlTWMKRA3vqLlFggp357_4')
 ADMIN_ID = 8391392903
 
-# Flask വെബ് സെർവർ (Render-ൽ ബോട്ട് സ്ലീപ്പ് ആകാതിരിക്കാൻ)
+# Flask വെബ് സെർവർ
 app_web = Flask(__name__)
 @app_web.route('/')
 def home(): return "Bot is Running"
@@ -21,7 +21,7 @@ def run_web():
     port = int(os.environ.get('PORT', 8080))
     app_web.run(host='0.0.0.0', port=port)
 
-# ബോട്ട് മാനേജ്‌മെന്റ് വേരിയബിളുകൾ
+# ബോട്ട് മാനേജ്‌മെന്റ്
 my_bots = {}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -72,27 +72,30 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"{name} ഡിലീറ്റ് ചെയ്തു 🗑")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # ഫയൽ അപ്‌ലോഡ് ചെയ്യുമ്പോൾ
     if update.message.document and context.user_data.get('state') == 'waiting_file':
         name = context.user_data.get('bot_name')
         path = f"{name}.py"
-        await update.message.document.get_file().download_to_drive(path)
+        # ഡോക്യുമെന്റ് ഡൗൺലോഡ് ചെയ്യുന്നു
+        file = await update.message.document.get_file()
+        await file.download_to_drive(path)
         my_bots[name] = {"process": None, "file": path}
         context.user_data['state'] = None
         await update.message.reply_text(f"✅ {name} ആഡ് ചെയ്തു!")
         return
 
+    # പേര് നൽകാൻ കാത്തിരിക്കുമ്പോൾ
     if context.user_data.get('state') == 'waiting_name':
         context.user_data['bot_name'] = update.message.text
         context.user_data['state'] = 'waiting_file'
         await update.message.reply_text(f"പേര്: '{update.message.text}'. ഇനി ഫയൽ അയക്കൂ.")
 
 if __name__ == '__main__':
-    # വെബ് സെർവർ ബാക്ക്ഗ്രൗണ്ടിൽ സ്റ്റാർട്ട് ചെയ്യുന്നു
     threading.Thread(target=run_web, daemon=True).start()
     
-    # Telegram ബോട്ട് സ്റ്റാർട്ട് ചെയ്യുന്നു
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(handle_callback))
+    # മെസ്സേജുകൾക്കും ഡോക്യുമെന്റുകൾക്കും ഒരേ ഹാൻഡ്‌ലർ ഉപയോഗിക്കുന്നു
     app.add_handler(MessageHandler(filters.TEXT | filters.Document.ALL, handle_message))
     app.run_polling()
