@@ -1,101 +1,134 @@
+import logging
 import os
-import subprocess
 import threading
-from flask import Flask
+import subprocess
+import sys
+from http.server import SimpleHTTPRequestHandler
+import socketserver
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler, 
-    MessageHandler, filters, ContextTypes
-)
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
-# Render-ൽ നിന്നും അല്ലെങ്കിൽ നേരിട്ട് TOKEN നൽകുക
-TOKEN = os.getenv('TOKEN', '7964154308:AAGPy7d8XgrvuPlTWMKRA3vqLlFggp357_4')
-ADMIN_ID = 8391392903
+# ലോഗിംഗ് സെറ്റപ്പ്
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# Flask വെബ് സെർവർ
-app_web = Flask(__name__)
-@app_web.route('/')
-def home(): return "Bot is Running"
+TOKEN = "8848040312:AAHM4UQTWPdUXPA9cdOJDiiQ8amswBPhXLg"
 
-def run_web():
-    port = int(os.environ.get('PORT', 8080))
-    app_web.run(host='0.0.0.0', port=port)
+# അപ്‌ലോഡ് ചെയ്യുന്ന ഫയൽ താല്കാലികമായി സൂക്ഷിക്കാൻ
+TARGET_BOT_FILE = "current_bot.py"
+bot_process = None # റൺ ചെയ്യുന്ന ബോട്ടിന്റെ പ്രോസസ്സ് സൂക്ഷിക്കാൻ
 
-# ബോട്ട് മാനേജ്‌മെന്റ്
-my_bots = {}
+# റെൻഡർ പോർട്ട് ബൈൻഡിംഗ് എറർ ഒഴിവാക്കാനുള്ള വെബ് സെർവർ
+def run_web_server():
+    PORT = int(os.environ.get("PORT", 8080))
+    Handler = SimpleHTTPRequestHandler
+    socketserver.TCPServer.allow_reuse_address = True
+    with socketserver.TCPServer(("", PORT), Handler) as httpd:
+        print(f"Web server running on port {PORT}")
+        httpd.serve_forever()
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return
+# മെയിൻ മെനു ബട്ടണുകൾ
+def main_menu_keyboard():
     keyboard = [
-        [InlineKeyboardButton("➕ Add Bot", callback_data='add')],
-        [InlineKeyboardButton("⚙️ Manage Bots", callback_data='manage')]
+        [InlineKeyboardButton("➕ Add Bot", callback_data='add_bot'),
+         InlineKeyboardButton("⚙️ Manage Bot", callback_data='manage_bot')],
+        [InlineKeyboardButton("📝 Edit Bot", callback_data='edit_bot'),
+         InlineKeyboardButton("📄 Edit File", callback_data='edit_file')],
+        [InlineKeyboardButton("📁 Select File (.py)", callback_data='select_file'),
+         InlineKeyboardButton("🗂️ Manage File", callback_data='manage_file')],
+        [InlineKeyboardButton("🚀 Deploy Bot", callback_data='deploy_bot')]
     ]
-    await update.message.reply_text("Bot Manager Panel:", reply_markup=InlineKeyboardMarkup(keyboard))
+    return InlineKeyboardMarkup(keyboard)
 
-async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# മാനേജ് ബോട്ട് സബ് മെനു (ON / OFF ഫീച്ചർ)
+def manage_bot_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("▶️ Turn ON", callback_data='bot_on'),
+         InlineKeyboardButton("⏸️ Turn OFF", callback_data='bot_off')],
+        [InlineKeyboardButton("« Back to Menu", callback_data='main_menu')]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+# /start കമാൻഡ്
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "👋 ഹലോ! ഹോസ്റ്റിംഗ് ബോട്ട് കൺട്രോൾ പാനലിലേക്ക് സ്വാഗതം.\nതാഴെയുള്ള ബട്ടണുകൾ ഉപയോഗിച്ച് നിങ്ങളുടെ ബോട്ടുകൾ മാനേജ് ചെയ്യാം:",
+        reply_markup=main_menu_keyboard()
+    )
+
+# ബട്ടൺ ക്ലിക്കുകൾ കൈകാര്യം ചെയ്യുന്ന ഫങ്ഷൻ
+async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global bot_process
     query = update.callback_query
     await query.answer()
     data = query.data
-    
-    if data == 'add':
-        context.user_data['state'] = 'waiting_name'
-        await query.edit_message_text("ബോട്ടിന്റെ പേര് ടൈപ്പ് ചെയ്യുക:")
-    elif data == 'manage':
-        if not my_bots:
-            await query.edit_message_text("ബോട്ടുകൾ ഒന്നും ഇല്ല!")
-            return
-        keyboard = [[InlineKeyboardButton(name, callback_data=f"sel_{name}")] for name in my_bots]
-        await query.edit_message_text("ഏത് ബോട്ട് മാനേജ് ചെയ്യണം?", reply_markup=InlineKeyboardMarkup(keyboard))
-    elif data.startswith('sel_'):
-        name = data.split('_')[1]
-        context.user_data['current_bot'] = name
-        keyboard = [
-            [InlineKeyboardButton("🟢 ON", callback_data='on'), InlineKeyboardButton("🔴 OFF", callback_data='off')],
-            [InlineKeyboardButton("🗑 Delete", callback_data='del')]
-        ]
-        await query.edit_message_text(f"Manager: {name}", reply_markup=InlineKeyboardMarkup(keyboard))
-    elif data in ['on', 'off', 'del']:
-        name = context.user_data.get('current_bot')
-        if not name: return
-        if data == 'on':
-            if my_bots[name]['process'] is None:
-                my_bots[name]['process'] = subprocess.Popen(["python3", my_bots[name]['file']])
-                await query.edit_message_text(f"{name} Started ✅")
-        elif data == 'off':
-            if my_bots[name]['process']:
-                my_bots[name]['process'].terminate()
-                my_bots[name]['process'] = None
-                await query.edit_message_text(f"{name} Stopped ❌")
-        elif data == 'del':
-            if my_bots[name]['process']: my_bots[name]['process'].terminate()
-            del my_bots[name]
-            await query.edit_message_text(f"{name} ഡിലീറ്റ് ചെയ്തു 🗑")
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # ഫയൽ അപ്‌ലോഡ് ചെയ്യുമ്പോൾ
-    if update.message.document and context.user_data.get('state') == 'waiting_file':
-        name = context.user_data.get('bot_name')
-        path = f"{name}.py"
-        # ഡോക്യുമെന്റ് ഡൗൺലോഡ് ചെയ്യുന്നു
+    if data == 'main_menu':
+        await query.edit_message_text("മെയിൻ മെനു:", reply_markup=main_menu_keyboard())
+        
+    elif data == 'add_bot':
+        await query.edit_message_text("🤖 പുതിയ ബോട്ട് ആഡ് ചെയ്യാൻ റെഡിയാണ്. നിങ്ങളുടെ ബോട്ടിന്റെ ടോക്കൺ അല്ലെങ്കിൽ ഫയലുകൾ അയക്കുക.\n\n« മടങ്ങാൻ താഴെ ക്ലിക്ക് ചെയ്യുക.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data='main_menu')]]))
+        
+    elif data == 'manage_bot':
+        await query.edit_message_text("⚙️ **ബോട്ട് മാനേജ്‌മെന്റ്**\nഇവിടെ നിങ്ങൾക്ക് ബോട്ട് ഓണാക്കാനും ഓഫാക്കാനും സാധിക്കും:", reply_markup=manage_bot_keyboard())
+        
+    elif data == 'edit_bot':
+        await query.edit_message_text("📝 ബോട്ടിന്റെ സെറ്റിംഗ്സ് എഡിറ്റ് ചെയ്യാനുള്ള ഓപ്ഷൻ ഉടൻ ലഭ്യമാകും.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data='main_menu')]]))
+        
+    elif data == 'edit_file':
+        await query.edit_message_text("📄 നിങ്ങളുടെ പൈത്തൺ ഫയലുകൾ എഡിറ്റ് ചെയ്യാനുള്ള സെക്ഷൻ.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data='main_menu')]]))
+        
+    elif data == 'select_file':
+        await query.edit_message_text("📁 ദയവായി നിങ്ങളുടെ ബോട്ടിന്റെ `.py` ഫയൽ ചാറ്റിലേക്ക് അപ്‌ലോഡ് ചെയ്യുക.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data='main_menu')]]))
+        
+    elif data == 'manage_file':
+        await query.edit_message_text("🗂️ നിലവിലുള്ള ഫയലുകൾ ഡിലീറ്റ് ചെയ്യാനും മാറ്റം വരുത്താനും ഇവിടെ സാധിക്കും.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data='main_menu')]]))
+        
+    elif data == 'deploy_bot':
+        await query.edit_message_text("🚀 റെൻഡർ സൈറ്റിലേക്ക് നിങ്ങളുടെ ബോട്ട് ഡിപ്ലോയ് ചെയ്യാനുള്ള പ്രോസസ്സ് ആരംഭിക്കുന്നു...", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data='main_menu')]]))
+        
+    elif data == 'bot_on':
+        if not os.path.exists(TARGET_BOT_FILE):
+            await query.edit_message_text("❌ റൺ ചെയ്യാൻ പൈത്തൺ ഫയലുകൾ ഒന്നും കണ്ടെത്തിയില്ല! ദയവായി ആദ്യം ഒരു `.py` ഫയൽ സെലക്ട്/അപ്‌ലോഡ് ചെയ്യുക.", reply_markup=manage_bot_keyboard())
+        elif bot_process and bot_process.poll() is None:
+            await query.edit_message_text("⚠️ ബോട്ട് നിലവിൽ ബാക്ക്ഗ്രൗണ്ടിൽ റൺ ചെയ്തുകൊണ്ടിരിക്കുകയാണ്!", reply_markup=manage_bot_keyboard())
+        else:
+            try:
+                # അപ്‌ലോഡ് ചെയ്ത പൈത്തൺ ഫയൽ ബാക്ക്ഗ്രൗണ്ടിൽ റൺ ചെയ്യുന്നു
+                bot_process = subprocess.Popen([sys.executable, TARGET_BOT_FILE])
+                await query.edit_message_text("🟢 ബോട്ട് വിജയകരമായി **ON** ആക്കിയിരിക്കുന്നു! നിങ്ങളുടെ മെയിൻ ബോട്ട് ഇപ്പോൾ റെസ്പോണ്ട് ചെയ്യും.", reply_markup=manage_bot_keyboard())
+            except Exception as e:
+                await query.edit_message_text(f"❌ ബോട്ട് റൺ ചെയ്യുന്നതിൽ പരാജയപ്പെട്ടു: {str(e)}", reply_markup=manage_bot_keyboard())
+        
+    elif data == 'bot_off':
+        if bot_process and bot_process.poll() is None:
+            bot_process.terminate() # പ്രോസസ്സ് സ്റ്റോപ്പ് ചെയ്യുന്നു
+            bot_process.wait()
+            bot_process = None
+            await query.edit_message_text("🔴 ബോട്ട് വിജയകരമായി **OFF** ആക്കിയിരിക്കുന്നു!", reply_markup=manage_bot_keyboard())
+        else:
+            await query.edit_message_text("⚠️ ബോട്ട് നിലവിൽ ഓഫാണ്!", reply_markup=manage_bot_keyboard())
+
+# ഫയലുകൾ അപ്‌ലോഡ് ചെയ്യുമ്പോൾ കൈകാര്യം ചെയ്യാൻ
+async def handle_docs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    file_name = update.message.document.file_name
+    if file_name.endswith('.py'):
         file = await update.message.document.get_file()
-        await file.download_to_drive(path)
-        my_bots[name] = {"process": None, "file": path}
-        context.user_data['state'] = None
-        await update.message.reply_text(f"✅ {name} ആഡ് ചെയ്തു!")
-        return
-
-    # പേര് നൽകാൻ കാത്തിരിക്കുമ്പോൾ
-    if context.user_data.get('state') == 'waiting_name':
-        context.user_data['bot_name'] = update.message.text
-        context.user_data['state'] = 'waiting_file'
-        await update.message.reply_text(f"പേര്: '{update.message.text}'. ഇനി ഫയൽ അയക്കൂ.")
+        # ഫയൽ 'current_bot.py' എന്ന പേരിൽ ഇവിടെ സേവ് ചെയ്യും
+        await file.download_to_drive(TARGET_BOT_FILE)
+        await update.message.reply_text(f"✅ വിജയകരമായി സെലക്ട് ചെയ്ത് സേവ് ചെയ്തു: `{file_name}`.\nഇനി **Manage Bot**-ൽ പോയി **Turn ON** ക്ലിക്ക് ചെയ്താൽ ഈ ബോട്ട് പ്രവർത്തിക്കും.", parse_mode="Markdown")
+    else:
+        await update.message.reply_text("❌ ദയവായി ഒരു പൈത്തൺ ഫയൽ (.py) മാത്രം അയക്കുക.")
 
 if __name__ == '__main__':
-    threading.Thread(target=run_web, daemon=True).start()
+    # വെബ് സെർവർ ബാക്ക്ഗ്രൗണ്ടിൽ സ്റ്റാർട്ട് ചെയ്യുന്നു (Render-ന് വേണ്ടി)
+    threading.Thread(target=run_web_server, daemon=True).start()
     
-    app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(handle_callback))
-    # മെസ്സേജുകൾക്കും ഡോക്യുമെന്റുകൾക്കും ഒരേ ഹാൻഡ്‌ലർ ഉപയോഗിക്കുന്നു
-    app.add_handler(MessageHandler(filters.TEXT | filters.Document.ALL, handle_message))
-    app.run_polling()
+    # ടെലിഗ്രാം ബോട്ട് സ്റ്റാർട്ട് ചെയ്യുന്നു
+    application = ApplicationBuilder().token(TOKEN).build()
+    
+    application.add_handler(CommandHandler('start', start))
+    application.add_handler(CallbackQueryHandler(button_click))
+    application.add_handler(MessageHandler(filters.Document.ALL, handle_docs))
+    
+    print("Hosting Bot is running perfectly with Subprocess management...")
+    application.run_polling()
