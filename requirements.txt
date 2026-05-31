@@ -1,2 +1,6 @@
 python-telegram-bot
 flask
+requests
+aiohttp
+beautifulsoup4
+psutil
