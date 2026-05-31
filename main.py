@@ -17,14 +17,17 @@ TOKEN = "8848040312:AAHM4UQTWPdUXPA9cdOJDiiQ8amswBPhXLg"
 TARGET_BOT_FILE = "current_bot.py"
 bot_process = None # റൺ ചെയ്യുന്ന ബോട്ടിന്റെ പ്രോസസ്സ് സൂക്ഷിക്കാൻ
 
-# റെൻഡർ പോർട്ട് ബൈൻഡിംഗ് എറർ ഒഴിവാക്കാനുള്ള വെബ് സെർവർ
+# Render പോർട്ട് ബൈൻഡിംഗ് എറർ ഒഴിവാക്കാനുള്ള വെബ് സെർവർ
 def run_web_server():
     PORT = int(os.environ.get("PORT", 8080))
     Handler = SimpleHTTPRequestHandler
     socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(("", PORT), Handler) as httpd:
-        print(f"Web server running on port {PORT}")
-        httpd.serve_forever()
+    try:
+        with socketserver.TCPServer(("", PORT), Handler) as httpd:
+            print(f"Web server running on port {PORT}")
+            httpd.serve_forever()
+    except Exception as e:
+        print(f"Web server error: {e}")
 
 # മെയിൻ മെനു ബട്ടണുകൾ
 def main_menu_keyboard():
@@ -32,7 +35,7 @@ def main_menu_keyboard():
         [InlineKeyboardButton("➕ Add Bot", callback_data='add_bot'),
          InlineKeyboardButton("⚙️ Manage Bot", callback_data='manage_bot')],
         [InlineKeyboardButton("📝 Edit Bot", callback_data='edit_bot'),
-         InlineKeyboardButton("📄 Edit File", callback_data='edit_file')],
+         InlineKeyboardButton("📄 View Logs (Edit)", callback_data='edit_file')],
         [InlineKeyboardButton("📁 Select File (.py)", callback_data='select_file'),
          InlineKeyboardButton("🗂️ Manage File", callback_data='manage_file')],
         [InlineKeyboardButton("🚀 Deploy Bot", callback_data='deploy_bot')]
@@ -75,7 +78,15 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("📝 ബോട്ടിന്റെ സെറ്റിംഗ്സ് എഡിറ്റ് ചെയ്യാനുള്ള ഓപ്ഷൻ ഉടൻ ലഭ്യമാകും.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data='main_menu')]]))
         
     elif data == 'edit_file':
-        await query.edit_message_text("📄 നിങ്ങളുടെ പൈത്തൺ ഫയലുകൾ എഡിറ്റ് ചെയ്യാനുള്ള സെക്ഷൻ.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data='main_menu')]]))
+        # ബോട്ട് ക്രാഷ് ആയാൽ എറർ ലോഗ്സ് കാണിക്കാനുള്ള ഫീച്ചർ
+        if os.path.exists("bot_output.log"):
+            with open("bot_output.log", "r") as f:
+                logs = f.read()[-1000:] # അവസാനത്തെ 1000 അക്ഷരങ്ങൾ മാത്രം എടുക്കുന്നു
+            if not logs.strip():
+                logs = "ലോഗ് ഫയൽ ശൂന്യമാണ്. ബോട്ട് സുഗമമായി റൺ ചെയ്യുന്നു അല്ലെങ്കിൽ ഇതുവരെ റൺ ചെയ്തിട്ടില്ല."
+            await query.edit_message_text(f"📄 **Cyber Bot Logs:**\n\n```\n{logs}\n```", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data='main_menu')]]))
+        else:
+            await query.edit_message_text("📄 നിലവിൽ ലോഗ് ഫയലുകൾ ഒന്നും ലഭ്യമല്ല. ബോട്ട് ഒരു തവണയെങ്കിലും ഓൺ ചെയ്യുക.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data='main_menu')]]))
         
     elif data == 'select_file':
         await query.edit_message_text("📁 ദയവായി നിങ്ങളുടെ ബോട്ടിന്റെ `.py` ഫയൽ ചാറ്റിലേക്ക് അപ്‌ലോഡ് ചെയ്യുക.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data='main_menu')]]))
@@ -93,9 +104,10 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("⚠️ ബോട്ട് നിലവിൽ ബാക്ക്ഗ്രൗണ്ടിൽ റൺ ചെയ്തുകൊണ്ടിരിക്കുകയാണ്!", reply_markup=manage_bot_keyboard())
         else:
             try:
-                # അപ്‌ലോഡ് ചെയ്ത പൈത്തൺ ഫയൽ ബാക്ക്ഗ്രൗണ്ടിൽ റൺ ചെയ്യുന്നു
-                bot_process = subprocess.Popen([sys.executable, TARGET_BOT_FILE])
-                await query.edit_message_text("🟢 ബോട്ട് വിജയകരമായി **ON** ആക്കിയിരിക്കുന്നു! നിങ്ങളുടെ മെയിൻ ബോട്ട് ഇപ്പോൾ റെസ്പോണ്ട് ചെയ്യും.", reply_markup=manage_bot_keyboard())
+                # എററുകൾ ട്രാക്ക് ചെയ്യാൻ ഔട്ട്പുട്ട് ഫയലിലേക്ക് തിരിച്ചുവിടുന്നു
+                log_file = open("bot_output.log", "w")
+                bot_process = subprocess.Popen([sys.executable, TARGET_BOT_FILE], stdout=log_file, stderr=log_file)
+                await query.edit_message_text("🟢 ബോട്ട് വിജയകരമായി **ON** ആക്കിയിരിക്കുന്നു!\n\n(ശ്രദ്ധിക്കുക: ബോട്ട് റെസ്പോണ്ട് ചെയ്യുന്നില്ലെങ്കിൽ മെയിൻ മെനുവിലെ 'View Logs' പരിശോധിക്കുക)", reply_markup=manage_bot_keyboard())
             except Exception as e:
                 await query.edit_message_text(f"❌ ബോട്ട് റൺ ചെയ്യുന്നതിൽ പരാജയപ്പെട്ടു: {str(e)}", reply_markup=manage_bot_keyboard())
         
@@ -115,6 +127,12 @@ async def handle_docs(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file = await update.message.document.get_file()
         # ഫയൽ 'current_bot.py' എന്ന പേരിൽ ഇവിടെ സേവ് ചെയ്യും
         await file.download_to_drive(TARGET_BOT_FILE)
+        
+        # പുതിയ ഫയൽ വരുമ്പോൾ പഴയ ലോഗ്സ് ക്ലിയർ ചെയ്യുക
+        if os.path.exists("bot_output.log"):
+            try: os.remove("bot_output.log")
+            except: pass
+            
         await update.message.reply_text(f"✅ വിജയകരമായി സെലക്ട് ചെയ്ത് സേവ് ചെയ്തു: `{file_name}`.\nഇനി **Manage Bot**-ൽ പോയി **Turn ON** ക്ലിക്ക് ചെയ്താൽ ഈ ബോട്ട് പ്രവർത്തിക്കും.", parse_mode="Markdown")
     else:
         await update.message.reply_text("❌ ദയവായി ഒരു പൈത്തൺ ഫയൽ (.py) മാത്രം അയക്കുക.")
