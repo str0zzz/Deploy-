@@ -4,3 +4,4 @@ gunicorn
 requests
 python-telegram-bot
 yt-dlp
+gTTS
