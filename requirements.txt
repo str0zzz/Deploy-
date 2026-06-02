@@ -3,3 +3,4 @@ flask
 gunicorn
 requests
 python-telegram-bot
+yt-dlp
